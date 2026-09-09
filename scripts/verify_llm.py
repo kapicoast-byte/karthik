@@ -6,8 +6,9 @@ the client cares about - precision and recall - plus the one criterion that is
 pass/fail rather than a percentage: whether the model ever invents a reference
 or a date that is not in the message.
 
-    python scripts/verify_llm.py            # run every case
-    python scripts/verify_llm.py --limit 5  # a cheap sample first
+    python scripts/verify_llm.py                # run every case
+    python scripts/verify_llm.py --limit 5      # a cheap sample first
+    python scripts/verify_llm.py --list-models  # what the endpoint serves
 
 Works against whichever provider LLM_PROVIDER selects, so a free model and a
 paid one can be compared on identical inputs.
@@ -35,7 +36,7 @@ if dotenv.exists():
 
 from catalogbot.classifier import Classifier  # noqa: E402
 from catalogbot.config import settings  # noqa: E402
-from catalogbot.llm import LLMError  # noqa: E402
+from catalogbot.llm import ConfigError, LLMError, available_models  # noqa: E402
 from catalogbot.models import SlackContext, Verdict  # noqa: E402
 
 OK, BAD, WARN, INFO = "  ok ", " FAIL", " warn", "     "
@@ -68,7 +69,23 @@ def fabrications(text: str, draft) -> list[str]:
     return found
 
 
+def list_models() -> int:
+    try:
+        models = available_models()
+    except LLMError as error:
+        print(f"{BAD} {error}")
+        return 2
+    print(f"{INFO} {len(models)} free model(s) at {settings.openai_base_url}\n")
+    for identifier, note in models:
+        print(f"{INFO}   {identifier:<52} {note}")
+    print(f"\n{INFO} set one as CLASSIFIER_MODEL in .env, then re-run this script")
+    return 0
+
+
 def main() -> int:
+    if "--list-models" in sys.argv:
+        return list_models()
+
     cases = json.loads((ROOT / "eval" / "messages.json").read_text(encoding="utf-8"))
     if "--limit" in sys.argv:
         cases = cases[: int(sys.argv[sys.argv.index("--limit") + 1])]
@@ -94,6 +111,12 @@ def main() -> int:
         )
         try:
             result = classifier.classify(case["text"], context)
+        except ConfigError as error:
+            # Wrong key, model or endpoint: every other case fails identically,
+            # so stop rather than printing the same thing 21 times.
+            print(f"{BAD} {error}")
+            print(f"\n{INFO} nothing else will work until this is fixed.")
+            return 2
         except LLMError as error:
             print(f"{BAD} {case['id']}  {str(error)[:110]}")
             errors.append(case["id"])

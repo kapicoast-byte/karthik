@@ -40,6 +40,10 @@ class Refusal(LLMError):
     """The model declined to answer. Caller should route to a human."""
 
 
+class ConfigError(LLMError):
+    """Wrong key, model or endpoint. Retrying other messages is pointless."""
+
+
 class Backend:
     def classify(self, system: str, user: str, schema: type[T]) -> T:
         raise NotImplementedError
@@ -151,7 +155,7 @@ class OpenAICompatBackend(Backend):
                 "POST", "/chat/completions", body=body
             )
         except OSError as error:
-            raise LLMError(f"cannot reach {settings.openai_base_url}: {error}")
+            raise ConfigError(f"cannot reach {settings.openai_base_url}: {error}")
 
         # Not every model supports strict schemas. Downgrade once, permanently.
         if status == 400 and self._supports_json_schema:
@@ -167,11 +171,14 @@ class OpenAICompatBackend(Backend):
                 401: " — check OPENAI_API_KEY",
                 402: " — the model needs credit; try a :free model",
                 429: " — rate limited; free tiers are strict, retry later",
-                404: " — unknown model id, check CLASSIFIER_MODEL",
+                404: " — unknown model id; run --list-models to see valid ids",
             }.get(status, "")
-            raise LLMError(
-                f"{settings.classifier_model} → {status}{hint}: {str(payload)[:300]}"
-            )
+            detail = _error_text(payload)
+            message = f"{settings.classifier_model} → {status}{hint}\n{detail}"
+            # 429 is worth retrying; a wrong key or model id never is.
+            if status in {401, 402, 403, 404}:
+                raise ConfigError(message)
+            raise LLMError(message)
 
         if not isinstance(payload, dict):
             raise LLMError(f"unexpected reply: {str(payload)[:200]}")
@@ -188,6 +195,36 @@ class OpenAICompatBackend(Backend):
 
     def close(self) -> None:
         self._http.close()
+
+
+def _error_text(payload: object) -> str:
+    """Pull the human-readable message out of an error body."""
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if isinstance(error, str):
+            return error
+    return str(payload)[:500]
+
+
+def available_models(free_only: bool = True) -> list[tuple[str, str]]:
+    """Model ids the endpoint currently serves. Ids change; guesses go stale."""
+    client = JsonClient(
+        settings.openai_base_url,
+        headers={"Authorization": f"Bearer {settings.openai_api_key}"},
+    )
+    status, payload = client.try_request("GET", "/models")
+    if status >= 400 or not isinstance(payload, dict):
+        raise ConfigError(f"could not list models → {status}: {_error_text(payload)}")
+    models = []
+    for entry in payload.get("data", []):
+        identifier = str(entry.get("id", ""))
+        if free_only and not identifier.endswith(":free"):
+            continue
+        context = entry.get("context_length") or ""
+        models.append((identifier, f"{context} ctx" if context else ""))
+    return sorted(models)
 
 
 def _strip_code_fence(text: str) -> str:
