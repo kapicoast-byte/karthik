@@ -15,7 +15,12 @@ installed by you, with scopes `im:history`, `mpim:history`, `channels:history`,
 - **(b)** Admin will not → scope shrinks to channels the bot is invited to,
   plus `@mentions`. DM-only requests would be forwarded manually.
 
-*We need the answer before we can quote Phase 1.*
+**The technical half is settled.** We built the Slack app and installed it on
+our own workspace: the user token is issued, the DM-reading scopes are granted,
+and capture works. So this is now purely a question of whether your admin
+approves the install — not whether it can be done.
+
+*We still need that answer before we can quote Phase 1.*
 
 ---
 

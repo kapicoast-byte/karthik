@@ -159,3 +159,21 @@ title-cases it to `X-Api-Key` — gets `403 "Given API token is not valid"`
 with error code 1010, for a perfectly valid token. The error points at the
 credential, so it costs hours if you do not know. `httpx` and PowerShell send
 it verbatim and are fine.
+
+## 10. Verified against a live Slack workspace
+
+Run `python scripts/verify_slack.py` to reproduce. Confirmed on a free Slack
+workspace (2026-09-09), app created from `slack/manifest.yml`:
+
+- Bot installed and authenticated; all 8 bot scopes the service uses granted.
+- **User token issued and working** — §3 DM capture is technically available,
+  so Q1 reduces to the client's admin decision (see `docs/open-questions.md`).
+- App-level token present: **Socket Mode connects**, so the service needs no
+  public HTTPS endpoint and no inbound firewall rule. `SLACK_SIGNING_SECRET`
+  is therefore unused; it only matters if a host forces HTTP event delivery.
+- Channel membership confirmed: a bot sees only channels it is invited to.
+- The §10 confirmation card posts and renders correctly in a DM.
+
+**Not yet proven:** that the buttons *respond*. Interactivity round-trips
+through Socket Mode only while the service is running, which needs an
+Anthropic API key for the classifier. That is the next gap.
