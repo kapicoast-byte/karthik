@@ -21,6 +21,7 @@ import os
 import pathlib
 import re
 import sys
+import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -109,16 +110,20 @@ def main() -> int:
             sender_name=case["sender"],
             message_ts=case["id"],
         )
+        # Large models take tens of seconds per message. Show the case before
+        # calling, so a slow run looks slow rather than hung.
+        print(f"{INFO} {case['id']}  …", end="", flush=True)
+        started = time.monotonic()
         try:
             result = classifier.classify(case["text"], context)
         except ConfigError as error:
             # Wrong key, model or endpoint: every other case fails identically,
             # so stop rather than printing the same thing 21 times.
-            print(f"{BAD} {error}")
+            print(f"\r{BAD} {error}")
             print(f"\n{INFO} nothing else will work until this is fixed.")
             return 2
         except LLMError as error:
-            print(f"{BAD} {case['id']}  {str(error)[:110]}")
+            print(f"\r{BAD} {case['id']}  {str(error)[:104]}".ljust(96))
             errors.append(case["id"])
             continue
 
@@ -130,7 +135,11 @@ def main() -> int:
 
         mark = OK if got == want else WARN
         title = result.draft.task if result.draft else "—"
-        print(f"{mark} {case['id']}  want {want:<11} got {got:<11} {title[:48]}")
+        elapsed = time.monotonic() - started
+        print(
+            f"\r{mark} {case['id']}  want {want:<11} got {got:<11} "
+            f"{title[:44]:<44} {elapsed:4.1f}s".ljust(96)
+        )
         for reason in made_up:
             print(f"{BAD}       INVENTED: {reason}")
 
