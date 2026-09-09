@@ -32,7 +32,7 @@ def load_env() -> dict[str, str]:
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
-                env.setdefault(key.strip(), value.strip())
+                env.setdefault(key.strip(), value.strip().strip("\"'"))
     return env
 
 
@@ -62,6 +62,49 @@ class Plane:
                 return error.code, raw.decode(errors="replace")[:300]
         except Exception as error:  # DNS, TLS, timeout
             return 0, f"{type(error).__name__}: {error}"
+
+
+def diagnose(key: str, slug: str, project: str, base: str) -> None:
+    """Isolate a 403: is it the token, the workspace, the path, or the host?
+
+    Each rung narrows it down. A token rejected everywhere is a bad token; one
+    that passes /users/me but not the workspace is a permission or plan wall;
+    one that passes the workspace but not the project is a wrong id or path.
+    """
+    print(f"\n{INFO} ---- diagnosing ----")
+
+    raw_len = len(key)
+    if key != key.strip() or any(c.isspace() for c in key):
+        print(f"{WARN} the token contains whitespace — likely a bad copy/paste")
+    print(f"{INFO} token length {raw_len} chars")
+
+    hosts = [base.rstrip("/")]
+    for alternative in ("https://api.plane.so", "https://app.plane.so"):
+        if alternative not in hosts:
+            hosts.append(alternative)
+
+    rungs = [
+        ("token itself   ", "/api/v1/users/me/"),
+        ("workspace      ", f"/api/v1/workspaces/{slug}/projects/"),
+        ("project states ", f"/api/v1/workspaces/{slug}/projects/{project}/states/"),
+    ]
+
+    for host in hosts:
+        print(f"\n{INFO} host {host}")
+        plane = Plane(host, key)
+        for label, path in rungs:
+            status, payload = plane.call("GET", path)
+            detail = ""
+            if status not in (200, 201) and payload:
+                detail = f"  {str(payload)[:120]}"
+            print(f"{INFO}   {label} {status}{detail}")
+
+    print(
+        f"\n{INFO} reading: 401/403 everywhere = the token is not being accepted;"
+        f"\n{INFO} token ok but workspace 403 = permission or plan wall;"
+        f"\n{INFO} workspace ok but states 403/404 = wrong project id or path;"
+        f"\n{INFO} one host works and the other does not = wrong PLANE_BASE_URL."
+    )
 
 
 def main() -> int:
@@ -105,6 +148,7 @@ def main() -> int:
             404: "workspace slug or project id is wrong",
         }.get(status, "")
         print(f"{BAD} GET states → {status} {hint}\n{INFO} {payload}")
+        diagnose(key, slug, project, base)
         return 1
 
     # 2. Labels ----------------------------------------------------------
