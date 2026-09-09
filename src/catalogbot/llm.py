@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -42,6 +43,22 @@ class Refusal(LLMError):
 
 class ConfigError(LLMError):
     """Wrong key, model or endpoint. Retrying other messages is pointless."""
+
+
+# Free capacity is shared and often busy. These are worth waiting out; a wrong
+# key or model id is not.
+TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
+TRANSIENT_PHRASES = ("overloaded", "temporarily", "try again", "rate limit", "busy")
+MAX_ATTEMPTS = 4
+
+
+def _is_transient(text: str) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in TRANSIENT_PHRASES)
+
+
+class _Transient(RuntimeError):
+    """A failure worth retrying. Never escapes this module."""
 
 
 class Backend:
@@ -125,6 +142,20 @@ class OpenAICompatBackend(Backend):
                 raise LLMError(f"model cannot satisfy the schema: {second_error}")
 
     def _complete(self, system: str, user: str, schema: type[T]) -> str:
+        """Send one request, waiting out transient upstream failures."""
+        delay = 2.0
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                return self._attempt(system, user, schema)
+            except _Transient as error:
+                if attempt == MAX_ATTEMPTS:
+                    raise LLMError(f"{error} (after {MAX_ATTEMPTS} attempts)")
+                log.warning("%s; retrying in %.0fs", error, delay)
+                time.sleep(delay)
+                delay *= 2
+        raise LLMError("unreachable")
+
+    def _attempt(self, system: str, user: str, schema: type[T]) -> str:
         body: dict = {
             "model": settings.classifier_model,
             "messages": [
@@ -164,7 +195,7 @@ class OpenAICompatBackend(Backend):
                 settings.classifier_model,
             )
             self._supports_json_schema = False
-            return self._complete(system, user, schema)
+            return self._attempt(system, user, schema)
 
         if status >= 400:
             hint = {
@@ -175,16 +206,20 @@ class OpenAICompatBackend(Backend):
             }.get(status, "")
             detail = _error_text(payload)
             message = f"{settings.classifier_model} → {status}{hint}\n{detail}"
-            # 429 is worth retrying; a wrong key or model id never is.
             if status in {401, 402, 403, 404}:
                 raise ConfigError(message)
+            if status in TRANSIENT_STATUSES or _is_transient(detail):
+                raise _Transient(message)
             raise LLMError(message)
 
         if not isinstance(payload, dict):
             raise LLMError(f"unexpected reply: {str(payload)[:200]}")
         if error := payload.get("error"):
-            # OpenRouter reports upstream failures inside a 200.
-            raise LLMError(f"{error.get('message', error)}")
+            # OpenRouter reports upstream failures inside a 200 body.
+            detail = _error_text(payload)
+            if _is_transient(detail):
+                raise _Transient(detail)
+            raise LLMError(detail)
 
         choice = payload["choices"][0]
         if choice.get("finish_reason") == "content_filter":

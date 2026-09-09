@@ -70,6 +70,25 @@ def fabrications(text: str, draft) -> list[str]:
     return found
 
 
+def _stratified(cases: list[dict], limit: int) -> list[dict]:
+    """Take a sample spanning every label, not the first N.
+
+    The file is grouped by label, so a plain slice returns only actionable
+    messages - and precision measured without a single negative case is not
+    precision at all.
+    """
+    by_label: dict[str, list[dict]] = {}
+    for case in cases:
+        by_label.setdefault(case["expect"], []).append(case)
+
+    chosen, labels = [], list(by_label)
+    while len(chosen) < limit and any(by_label.values()):
+        for label in labels:
+            if by_label[label] and len(chosen) < limit:
+                chosen.append(by_label[label].pop(0))
+    return sorted(chosen, key=lambda c: c["id"])
+
+
 def list_models() -> int:
     try:
         models = available_models()
@@ -89,7 +108,7 @@ def main() -> int:
 
     cases = json.loads((ROOT / "eval" / "messages.json").read_text(encoding="utf-8"))
     if "--limit" in sys.argv:
-        cases = cases[: int(sys.argv[sys.argv.index("--limit") + 1])]
+        cases = _stratified(cases, int(sys.argv[sys.argv.index("--limit") + 1]))
 
     print(f"{INFO} provider {settings.llm_provider} · model {settings.classifier_model}")
     print(f"{INFO} {len(cases)} labelled messages\n")
@@ -153,8 +172,8 @@ def _summarise(results, invented, errors) -> None:
         print(f"{BAD} no cases completed")
         return
 
-    # A "filed" prediction is anything the system would turn into a task.
-    # Ambiguous is not a failure - §10 wants a question, not a guess.
+    # "Filed" means anything that would become a task. Ambiguous is not a
+    # failure - §10 asks for a question rather than a guess.
     true_positive = sum(
         1 for c, g in results if c["expect"] == "actionable" and g == Verdict.ACTIONABLE
     )
@@ -165,11 +184,13 @@ def _summarise(results, invented, errors) -> None:
         1 for c, g in results if c["expect"] == "actionable" and g == Verdict.NOT_A_TASK
     )
     real = sum(1 for c, _ in results if c["expect"] == "actionable")
+    chatter = sum(1 for c, _ in results if c["expect"] == "not_a_task")
 
+    exact = sum(1 for c, g in results if c["expect"] == g) / len(results)
     precision = true_positive / (true_positive + false_positive or 1)
     recall = true_positive / (real or 1)
-    exact = sum(1 for c, g in results if c["expect"] == g) / len(results)
 
+    print(f"{INFO} completed            {len(results)} case(s)")
     print(f"{INFO} exact verdict match  {exact:.0%}")
     print(f"{INFO} precision            {precision:.0%}  (target ≥ 90%)")
     print(f"{INFO} recall               {recall:.0%}  (target ≥ 80%)")
@@ -178,11 +199,25 @@ def _summarise(results, invented, errors) -> None:
     if missed:
         print(f"{WARN} {missed} real task(s) dropped silently")
 
-    print()
+    # A verdict is only meaningful over a sample that could have disproved it.
+    blockers = []
     if errors:
-        print(f"{BAD} {len(errors)} case(s) errored: {', '.join(errors)}")
+        blockers.append(f"{len(errors)} case(s) errored: {', '.join(errors)}")
     if invented:
-        print(f"{BAD} {len(invented)} fabrication(s) — this criterion is pass/fail")
+        blockers.append(f"{len(invented)} fabrication(s) — this criterion is pass/fail")
+    if not chatter:
+        blockers.append("no chatter cases ran, so precision is not measurable")
+    if not real:
+        blockers.append("no actionable cases ran, so recall is not measurable")
+    if len(results) < 10:
+        blockers.append(f"only {len(results)} case(s) — too few to conclude anything")
+
+    print()
+    for blocker in blockers:
+        print(f"{BAD} {blocker}")
+
+    if blockers:
+        print(f"\n{WARN} no verdict: run the full set once the blockers above clear")
     elif precision >= 0.9 and recall >= 0.8:
         print(f"{OK} meets the §7 acceptance criteria on this sample")
     else:
