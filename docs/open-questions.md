@@ -37,23 +37,33 @@ automatable the way the sentence implies.
 
 - Which Plane **workspace** and **project(s)**? One project, or one per
   marketplace?
-- Your 7 statuses must map onto Plane states. Proposed mapping:
+- Your 7 statuses must map onto Plane states. Plane's default set, confirmed
+  against a live project, is Backlog, Todo, In Progress, Done, Cancelled —
+  there is no Blocked state. So we propose:
 
-  | Your status | Plane state (group) |
-  |---|---|
-  | New | Todo (*unstarted*) |
-  | In Progress | In Progress (*started*) |
-  | Waiting on Me | Blocked (*started*) + label `waiting:me` |
-  | Waiting on Team | Blocked (*started*) + label `waiting:team` |
-  | Waiting on Marketplace | Blocked (*started*) + label `waiting:marketplace` |
-  | Completed | Done (*completed*) |
-  | Cancelled | Cancelled (*cancelled*) |
+  | Your status | Plane state (group) | Label |
+  |---|---|---|
+  | New | Todo (*unstarted*) | — |
+  | In Progress | In Progress (*started*) | — |
+  | Waiting on Me | In Progress (*started*) | `waiting:me` |
+  | Waiting on Team | In Progress (*started*) | `waiting:team` |
+  | Waiting on Marketplace | In Progress (*started*) | `waiting:marketplace` |
+  | Completed | Done (*completed*) | — |
+  | Cancelled | Cancelled (*cancelled*) | — |
 
-  Confirm, or tell us you would rather have five separate custom states.
+  Confirm this, or tell us you would rather add a custom **Blocked** state (or
+  three separate Waiting states) to your board — either is fine, it is one
+  line of configuration, but it has to match what your reporting expects.
 - Where do Marketplace (Amazon/Walmart/Other) and Priority live — Plane's
   native priority field + labels, or custom properties?
 - Does your Plane plan expose **API tokens** and **outbound webhooks**? We need
   both (webhooks are how status changes made in Plane flow back to us).
+  On a Plane Cloud Business trial we confirmed both are available, so the
+  integration is proven — but we have not confirmed what the Free tier keeps.
+  Please tell us **which plan you are on**, and whether **Webhooks** appears
+  under your Workspace settings. If it does not, Phase 2 has to poll Plane on
+  a timer instead of receiving pushes: more code, slower to notice changes,
+  and priced separately.
 
 ---
 

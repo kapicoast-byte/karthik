@@ -138,3 +138,24 @@ also the eval set used to tune the classifier.
 | Amazon case check turns out to mean Seller Central scraping | Scope out; offer the Plane-tracked-cases version instead. |
 | Slack message content leaving the workspace to an LLM | Explicit client sign-off + channel allowlist + no message retention beyond the task record. |
 | Plane API rate limits / schema drift | Single client wrapper (`plane.py`), retries, contract test against a sandbox project. |
+
+## 9. Verified against a live Plane workspace
+
+Run `python scripts/verify_plane.py` to reproduce. Confirmed on a Plane Cloud
+Business trial (2026-09-09):
+
+- Base URL `https://api.plane.so`, auth header `X-API-Key`.
+- Full CRUD works: read states and labels, create, update, list, delete.
+- Default state set is **Backlog, Todo, In Progress, Done, Cancelled**.
+  There is **no Blocked state** — the mapping in `plane.py` was corrected.
+- **Outbound webhooks are available**, so Phase 2 can use push rather than
+  polling — on this plan. The client's plan still needs confirming (Q3).
+- Personal access tokens (`plane_api_...`, 42 chars) work for the full API;
+  a workspace-level token was not required.
+
+**Trap worth knowing:** Plane matches the `X-API-Key` header name
+case-sensitively. Any client that normalises header names — `urllib`
+title-cases it to `X-Api-Key` — gets `403 "Given API token is not valid"`
+with error code 1010, for a perfectly valid token. The error points at the
+credential, so it costs hours if you do not know. `httpx` and PowerShell send
+it verbatim and are fine.

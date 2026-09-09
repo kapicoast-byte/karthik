@@ -25,6 +25,12 @@ def main() -> None:
     init_db()
 
     plane = PlaneClient()
+    if problems := plane.validate_setup():
+        for problem in problems:
+            log.error("Plane project is not set up: %s", problem)
+        log.error("run: python scripts/verify_plane.py --create-labels")
+        raise SystemExit(1)
+
     pipeline = Pipeline(Classifier(), plane)
     app = build_app(pipeline)
 

@@ -21,13 +21,21 @@ log = logging.getLogger(__name__)
 
 # §4 statuses → Plane states. The right-hand side is the *state name* in the
 # client's project; resolved to a UUID at runtime by `resolve_state_ids`.
-# Confirm this mapping with the client — docs/open-questions.md Q3.
+#
+# Verified against a real Plane project: the default state set is Backlog
+# (backlog), Todo (unstarted), In Progress (started), Done (completed),
+# Cancelled (cancelled). There is no "Blocked" state, so the three "Waiting
+# on ..." statuses map onto In Progress - the work is underway but stalled,
+# which is the `started` group - and are told apart by label.
+#
+# If the client would rather see a distinct Blocked column, that is a custom
+# state on their board and this mapping changes. See docs/open-questions.md Q3.
 STATUS_TO_STATE_NAME: dict[Status, str] = {
     Status.NEW: "Todo",
     Status.IN_PROGRESS: "In Progress",
-    Status.WAITING_ON_ME: "Blocked",
-    Status.WAITING_ON_TEAM: "Blocked",
-    Status.WAITING_ON_MARKETPLACE: "Blocked",
+    Status.WAITING_ON_ME: "In Progress",
+    Status.WAITING_ON_TEAM: "In Progress",
+    Status.WAITING_ON_MARKETPLACE: "In Progress",
     Status.COMPLETED: "Done",
     Status.CANCELLED: "Cancelled",
 }
@@ -106,6 +114,33 @@ class PlaneClient:
             payload = self._request("GET", path)
             self._state_ids = {s["name"]: s["id"] for s in payload.get("results", [])}
         return self._state_ids
+
+    def validate_setup(self) -> list[str]:
+        """Check the project can actually hold our statuses and labels.
+
+        A missing state means work items would silently land in the project's
+        default state, so every task would carry the wrong status and nobody
+        would notice. Better to refuse to start.
+        """
+        problems = []
+        states = self.resolve_state_ids()
+        for name in sorted(set(STATUS_TO_STATE_NAME.values())):
+            if name not in states:
+                problems.append(f"state {name!r} does not exist in this project")
+
+        labels = self.resolve_label_ids()
+        for name in sorted(set(STATUS_TO_LABEL.values())):
+            if name not in labels:
+                problems.append(f"label {name!r} does not exist in this project")
+        return problems
+
+    def create_label(self, name: str) -> dict[str, Any]:
+        path = (
+            f"/api/v1/workspaces/{self._workspace}"
+            f"/projects/{self._project}/labels/"
+        )
+        self._label_ids.clear()
+        return self._request("POST", path, json={"name": name})
 
     def resolve_label_ids(self) -> dict[str, str]:
         if not self._label_ids:

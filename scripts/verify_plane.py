@@ -4,7 +4,8 @@
 Reads PLANE_* from .env, then walks the same calls the service makes:
 metadata, create, update, delete. Cleans up after itself.
 
-    python scripts/verify_plane.py
+    python scripts/verify_plane.py                  # check only
+    python scripts/verify_plane.py --create-labels  # also create our labels
 
 Exit code 0 means the Plane layer is sound. Anything else prints what broke
 and where, so the fix goes into src/catalogbot/plane.py.
@@ -179,9 +180,18 @@ def main() -> int:
     if status == 200:
         names = [l.get("name") for l in payload.get("results", [])]
         print(f"\n{OK} labels readable · {names or 'none defined yet'}")
-        for needed in ("waiting:me", "waiting:team", "waiting:marketplace"):
-            if needed not in names:
-                print(f"{WARN} label {needed!r} missing — create it before Phase 2")
+        wanted = ("waiting:me", "waiting:team", "waiting:marketplace")
+        missing = [name for name in wanted if name not in names]
+        if missing and "--create-labels" in sys.argv:
+            for name in missing:
+                made, body = plane.call("POST", f"{root}/labels/", {"name": name})
+                if made in (200, 201):
+                    print(f"{OK} created label {name!r}")
+                else:
+                    print(f"{BAD} could not create {name!r} → {made}: {body}")
+        else:
+            for name in missing:
+                print(f"{WARN} label {name!r} missing — re-run with --create-labels")
     else:
         failures.append(f"GET labels → {status}")
         print(f"\n{BAD} GET labels → {status}: {payload}")
