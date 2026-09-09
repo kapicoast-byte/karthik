@@ -177,3 +177,51 @@ workspace (2026-09-09), app created from `slack/manifest.yml`:
 **Not yet proven:** that the buttons *respond*. Interactivity round-trips
 through Socket Mode only while the service is running, which needs an
 Anthropic API key for the classifier. That is the next gap.
+
+## 11. Classifier: measured, not assumed
+
+Run `python scripts/verify_llm.py` against `eval/messages.json` (21 labelled
+catalog-ops messages: 8 actionable, 9 chatter, 4 ambiguous).
+
+### nvidia/nemotron-3-ultra-550b-a55b:free — 2026-09-09, 21/21 completed
+
+| Measure | Result | Target |
+|---|---|---|
+| Exact verdict match | 90% | — |
+| Precision | **100%** | ≥ 90% |
+| Recall | 88% | ≥ 80% |
+| Fabricated references or dates | **0** | 0 (pass/fail) |
+
+All nine chatter messages were correctly ignored — acknowledgements, an FYI,
+a standup reminder, and a passing @mention. That is §10's central requirement
+holding under measurement. Titles were usable as written: "Fix the bullet
+points on B08XYZ1234", "Re-upload images for SKU KAP-4410 at 1600px".
+
+The two misses differ in kind. `a07` (rejected A+ content) came back
+*ambiguous* rather than actionable — the safe direction: it asks instead of
+guessing, which is what §10 asks for. `m03` ("should we be worried about the
+returns rate?") came back *not_a_task* rather than ambiguous, which is a real
+miss, though that label is arguable.
+
+**Verdict: the approach works. This model cannot run it.** Latency was
+31–197s per message (median ~70s) and free capacity was overloaded on 6 of 21
+requests. A confirmation prompt arriving two minutes after the Slack message
+is not a working intake system.
+
+### What the free tier settles
+
+- Correctness: the prompt, schema and guardrails do the job on real messages.
+- Not viable for production, on two independent grounds: minute-scale latency,
+  and a per-day request cap (~50 without credit) that a live workspace would
+  exhaust before lunch.
+
+### Cost is not the constraint
+
+At roughly 900 input and 200 output tokens per message and 200 messages a day,
+a small paid model costs on the order of $1–2 a month, and a frontier model
+tens of dollars. Both are negligible against the manual effort being replaced.
+The system prompt is long, stable, and identical on every call, so providers
+that support prompt caching cut the input cost again — already implemented on
+the Anthropic backend.
+
+**So model choice should be decided by latency and reliability, not price.**
