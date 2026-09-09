@@ -22,10 +22,10 @@ import json
 import logging
 from typing import TypeVar
 
-import httpx2 as httpx
 from pydantic import BaseModel, ValidationError
 
 from .config import settings
+from .http import JsonClient
 
 log = logging.getLogger(__name__)
 
@@ -96,10 +96,8 @@ class OpenAICompatBackend(Backend):
             # OpenRouter attributes traffic with these; harmless elsewhere.
             headers["HTTP-Referer"] = "https://github.com/kapicoast-byte/karthik"
             headers["X-Title"] = "catalogbot"
-        self._http = httpx.Client(
-            base_url=settings.openai_base_url.rstrip("/"),
-            headers=headers,
-            timeout=90.0,
+        self._http = JsonClient(
+            settings.openai_base_url, headers=headers, timeout=90.0
         )
         self._supports_json_schema = True
 
@@ -149,12 +147,14 @@ class OpenAICompatBackend(Backend):
             )
 
         try:
-            response = self._http.post("/chat/completions", json=body)
-        except Exception as error:
+            status, payload = self._http.try_request(
+                "POST", "/chat/completions", body=body
+            )
+        except OSError as error:
             raise LLMError(f"cannot reach {settings.openai_base_url}: {error}")
 
         # Not every model supports strict schemas. Downgrade once, permanently.
-        if response.status_code == 400 and self._supports_json_schema:
+        if status == 400 and self._supports_json_schema:
             log.warning(
                 "%s rejected json_schema; falling back to json_object",
                 settings.classifier_model,
@@ -162,13 +162,19 @@ class OpenAICompatBackend(Backend):
             self._supports_json_schema = False
             return self._complete(system, user, schema)
 
-        if response.status_code >= 400:
+        if status >= 400:
+            hint = {
+                401: " — check OPENAI_API_KEY",
+                402: " — the model needs credit; try a :free model",
+                429: " — rate limited; free tiers are strict, retry later",
+                404: " — unknown model id, check CLASSIFIER_MODEL",
+            }.get(status, "")
             raise LLMError(
-                f"{settings.classifier_model} → {response.status_code}: "
-                f"{response.text[:300]}"
+                f"{settings.classifier_model} → {status}{hint}: {str(payload)[:300]}"
             )
 
-        payload = response.json()
+        if not isinstance(payload, dict):
+            raise LLMError(f"unexpected reply: {str(payload)[:200]}")
         if error := payload.get("error"):
             # OpenRouter reports upstream failures inside a 200.
             raise LLMError(f"{error.get('message', error)}")

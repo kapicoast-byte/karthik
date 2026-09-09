@@ -12,9 +12,8 @@ import logging
 from datetime import date
 from typing import Any
 
-import httpx2 as httpx
-
 from .config import settings
+from .http import HttpError, JsonClient
 from .models import Marketplace, Priority, Status, TaskDraft
 
 log = logging.getLogger(__name__)
@@ -70,16 +69,11 @@ class PlaneClient:
     ) -> None:
         self._workspace = workspace or settings.plane_workspace_slug
         self._project = project_id or settings.plane_project_id
-        self._http = httpx.Client(
-            base_url=settings.plane_base_url.rstrip("/"),
-            # Plane matches this header name case-sensitively: a client that
-            # normalises it (urllib title-cases it to X-Api-Key) gets a 403
-            # "Given API token is not valid" for a perfectly good token.
-            # httpx preserves the case given here; keep it exactly as written.
-            headers={
-                "X-API-Key": api_key or settings.plane_api_key,
-                "Content-Type": "application/json",
-            },
+        # `X-API-Key` must reach Plane with exactly this capitalisation - see
+        # the note in http.py. JsonClient preserves it; most clients do not.
+        self._http = JsonClient(
+            settings.plane_base_url,
+            headers={"X-API-Key": api_key or settings.plane_api_key},
             timeout=30.0,
         )
         self._state_ids: dict[str, str] = {}
@@ -91,13 +85,17 @@ class PlaneClient:
     def _issues_path(self) -> str:
         return f"/api/v1/workspaces/{self._workspace}/projects/{self._project}/issues/"
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
-        response = self._http.request(method, path, **kwargs)
-        if response.status_code >= 400:
-            raise PlaneError(
-                f"Plane {method} {path} → {response.status_code}: {response.text[:500]}"
-            )
-        return response.json() if response.content else None
+    def _request(
+        self,
+        method: str,
+        path: str,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        try:
+            return self._http.request(method, path, body=json, params=params)
+        except HttpError as error:
+            raise PlaneError(f"Plane {method} {path} → {error}") from error
 
     def close(self) -> None:
         self._http.close()
