@@ -6,9 +6,15 @@ the client cares about - precision and recall - plus the one criterion that is
 pass/fail rather than a percentage: whether the model ever invents a reference
 or a date that is not in the message.
 
-    python scripts/verify_llm.py                # run every case
-    python scripts/verify_llm.py --limit 5      # a cheap sample first
-    python scripts/verify_llm.py --list-models  # what the endpoint serves
+    python scripts/verify_llm.py                     # run every case
+    python scripts/verify_llm.py --limit 6           # a stratified sample
+    python scripts/verify_llm.py --list-models       # what the endpoint serves
+    python scripts/verify_llm.py --model <id>        # try another model
+    python scripts/verify_llm.py --workers 1         # serialise (default 4)
+
+Latency matters as much as accuracy here: a model that needs a minute per
+message cannot sit in front of live Slack intake, however well it scores.
+Each run is saved to eval/results/ so models can be compared after the fact.
 
 Works against whichever provider LLM_PROVIDER selects, so a free model and a
 paid one can be compared on identical inputs.
@@ -22,11 +28,12 @@ import pathlib
 import re
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-# .env before importing settings, which reads the environment at import time.
+# .env before importing settings, which reads the environment on import.
 dotenv = ROOT / ".env"
 if dotenv.exists():
     for line in dotenv.read_text(encoding="utf-8").splitlines():
@@ -102,7 +109,15 @@ def list_models() -> int:
     return 0
 
 
+def _arg(name: str, default):
+    if name in sys.argv:
+        return type(default)(sys.argv[sys.argv.index(name) + 1])
+    return default
+
+
 def main() -> int:
+    if model := _arg("--model", ""):
+        settings.classifier_model = model
     if "--list-models" in sys.argv:
         return list_models()
 
@@ -119,9 +134,13 @@ def main() -> int:
         print(f"{BAD} {error}")
         return 2
 
-    results, invented, errors = [], [], []
+    workers = max(1, _arg("--workers", 4))
+    print(f"{INFO} {workers} concurrent request(s)\n")
 
-    for case in cases:
+    results, invented, errors = [], [], []
+    fatal: ConfigError | None = None
+
+    def run(case: dict):
         context = SlackContext(
             channel_id="C0TEST",
             channel_name=case["channel"],
@@ -129,41 +148,72 @@ def main() -> int:
             sender_name=case["sender"],
             message_ts=case["id"],
         )
-        # Large models take tens of seconds per message. Show the case before
-        # calling, so a slow run looks slow rather than hung.
-        print(f"{INFO} {case['id']}  …", end="", flush=True)
         started = time.monotonic()
-        try:
-            result = classifier.classify(case["text"], context)
-        except ConfigError as error:
-            # Wrong key, model or endpoint: every other case fails identically,
-            # so stop rather than printing the same thing 21 times.
-            print(f"\r{BAD} {error}")
-            print(f"\n{INFO} nothing else will work until this is fixed.")
-            return 2
-        except LLMError as error:
-            print(f"\r{BAD} {case['id']}  {str(error)[:104]}".ljust(96))
-            errors.append(case["id"])
-            continue
+        result = classifier.classify(case["text"], context)
+        return case, result, time.monotonic() - started
 
-        got, want = result.verdict.value, case["expect"]
-        results.append((case, got))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(run, case): case for case in cases}
+        for future in as_completed(futures):
+            case = futures[future]
+            try:
+                case, result, elapsed = future.result()
+            except ConfigError as error:
+                fatal = fatal or error
+                continue
+            except LLMError as error:
+                print(f"{BAD} {case['id']}  {str(error)[:96]}")
+                errors.append(case["id"])
+                continue
 
-        made_up = fabrications(case["text"], result.draft)
-        invented += [(case["id"], reason) for reason in made_up]
+            got, want = result.verdict.value, case["expect"]
+            results.append((case, got))
 
-        mark = OK if got == want else WARN
-        title = result.draft.task if result.draft else "—"
-        elapsed = time.monotonic() - started
-        print(
-            f"\r{mark} {case['id']}  want {want:<11} got {got:<11} "
-            f"{title[:44]:<44} {elapsed:4.1f}s".ljust(96)
-        )
-        for reason in made_up:
-            print(f"{BAD}       INVENTED: {reason}")
+            made_up = fabrications(case["text"], result.draft)
+            invented += [(case["id"], reason) for reason in made_up]
 
+            mark = OK if got == want else WARN
+            title = result.draft.task if result.draft else "—"
+            print(
+                f"{mark} {case['id']}  want {want:<11} got {got:<11} "
+                f"{title[:42]:<42} {elapsed:5.1f}s"
+            )
+            for reason in made_up:
+                print(f"{BAD}       INVENTED: {reason}")
+
+    if fatal is not None:
+        print(f"\n{BAD} {fatal}")
+        print(f"{INFO} nothing else will work until this is fixed.")
+        return 2
+
+    results.sort(key=lambda pair: pair[0]["id"])
     _summarise(results, invented, errors)
+    _save(results, invented, errors)
     return 1 if (invented or errors) else 0
+
+
+def _save(results, invented, errors) -> None:
+    """Keep each run, so a model choice can be argued from data later."""
+    if not results:
+        return  # a run that classified nothing is not a result
+    out = ROOT / "eval" / "results"
+    out.mkdir(parents=True, exist_ok=True)
+    name = settings.classifier_model.replace("/", "_").replace(":", "_")
+    (out / f"{name}.json").write_text(
+        json.dumps(
+            {
+                "model": settings.classifier_model,
+                "provider": settings.llm_provider,
+                "completed": len(results),
+                "errors": errors,
+                "fabrications": invented,
+                "verdicts": {case["id"]: got for case, got in results},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"{INFO} saved to eval/results/{name}.json")
 
 
 def _summarise(results, invented, errors) -> None:
