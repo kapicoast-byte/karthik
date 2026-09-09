@@ -85,7 +85,12 @@ def diagnose(key: str, slug: str, project: str, base: str) -> None:
     print(f"{INFO} token length {raw_len} chars")
 
     hosts = [base.rstrip("/")]
-    for alternative in ("https://api.plane.so", "https://app.plane.so"):
+    for alternative in (
+        "https://api.plane.com",
+        "https://app.plane.com",
+        "https://api.plane.so",
+        "https://app.plane.so",
+    ):
         if alternative not in hosts:
             hosts.append(alternative)
 
@@ -100,10 +105,14 @@ def diagnose(key: str, slug: str, project: str, base: str) -> None:
         plane = Plane(host, key)
         for label, path in rungs:
             status, payload = plane.call("GET", path)
-            detail = ""
-            if status not in (200, 201) and payload:
-                detail = f"  {str(payload)[:120]}"
-            print(f"{INFO}   {label} {status}{detail}")
+            body = str(payload) if payload is not None else ""
+            if "non-JSON" in body:
+                verdict = "HTML - not an API host"
+            elif status in (200, 201):
+                verdict = "OK"
+            else:
+                verdict = body[:110] or "-"
+            print(f"{INFO}   {label} {status:<4} {verdict}")
 
     print(
         f"\n{INFO} reading: 401/403 everywhere = the token is not being accepted;"
