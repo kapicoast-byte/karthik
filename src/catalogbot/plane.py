@@ -64,6 +64,10 @@ class PlaneClient:
         self._project = project_id or settings.plane_project_id
         self._http = httpx.Client(
             base_url=settings.plane_base_url.rstrip("/"),
+            # Plane matches this header name case-sensitively: a client that
+            # normalises it (urllib title-cases it to X-Api-Key) gets a 403
+            # "Given API token is not valid" for a perfectly good token.
+            # httpx preserves the case given here; keep it exactly as written.
             headers={
                 "X-API-Key": api_key or settings.plane_api_key,
                 "Content-Type": "application/json",

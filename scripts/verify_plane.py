@@ -12,12 +12,12 @@ and where, so the fix goes into src/catalogbot/plane.py.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import pathlib
 import sys
-import urllib.error
-import urllib.request
+import urllib.parse
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -37,37 +37,45 @@ def load_env() -> dict[str, str]:
 
 
 class Plane:
+    """Minimal Plane client.
+
+    Uses http.client rather than urllib because urllib title-cases header
+    names - `X-API-Key` goes on the wire as `X-Api-Key` - and Plane's gateway
+    matches that name case-sensitively, rejecting a valid token with 403
+    "Given API token is not valid". http.client sends header names verbatim.
+    """
+
     def __init__(self, base: str, key: str) -> None:
-        self._base = base.rstrip("/")
+        self._url = urllib.parse.urlsplit(base.rstrip("/"))
         self._key = key
 
     def call(
         self, method: str, path: str, body: dict | None = None
     ) -> tuple[int, object]:
-        request = urllib.request.Request(
-            f"{self._base}{path}",
-            method=method,
-            data=json.dumps(body).encode() if body is not None else None,
-            headers={"X-API-Key": self._key, "Content-Type": "application/json"},
-        )
+        payload = json.dumps(body).encode() if body is not None else None
+        connection: http.client.HTTPConnection
+        if self._url.scheme == "http":
+            connection = http.client.HTTPConnection(self._url.netloc, timeout=30)
+        else:
+            connection = http.client.HTTPSConnection(self._url.netloc, timeout=30)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
-                raw = response.read()
-                if not raw:
-                    return response.status, None
-                try:
-                    return response.status, json.loads(raw)
-                except json.JSONDecodeError:
-                    # A 200 of HTML means this host serves the web app, not the API.
-                    return response.status, "<non-JSON body: not an API endpoint>"
-        except urllib.error.HTTPError as error:
-            raw = error.read()
+            headers = {"X-API-Key": self._key, "Accept": "application/json"}
+            if payload is not None:
+                headers["Content-Type"] = "application/json"
+            connection.request(method, f"{self._url.path}{path}", payload, headers)
+            response = connection.getresponse()
+            raw = response.read()
+            if not raw:
+                return response.status, None
             try:
-                return error.code, json.loads(raw)
-            except Exception:
-                return error.code, raw.decode(errors="replace")[:300]
+                return response.status, json.loads(raw)
+            except json.JSONDecodeError:
+                # A 200 of HTML means this host serves the web app, not the API.
+                return response.status, "<non-JSON body: not an API endpoint>"
         except Exception as error:  # DNS, TLS, timeout
             return 0, f"{type(error).__name__}: {error}"
+        finally:
+            connection.close()
 
 
 def diagnose(key: str, slug: str, project: str, base: str) -> None:
