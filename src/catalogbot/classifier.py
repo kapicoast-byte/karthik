@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import logging
 
-import anthropic
-
-from .config import settings
+from .llm import Backend, Refusal, build_backend
 from .models import Classification, SlackContext, Verdict
 
 log = logging.getLogger(__name__)
@@ -69,8 +67,8 @@ on B08XYZ1234", not "Slack request from Priya". `details` carries the rest.
 
 
 class Classifier:
-    def __init__(self, client: anthropic.Anthropic | None = None) -> None:
-        self._client = client or anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    def __init__(self, backend: Backend | None = None) -> None:
+        self._backend = backend or build_backend()
 
     def classify(
         self,
@@ -79,26 +77,14 @@ class Classifier:
         thread: list[str] | None = None,
     ) -> Classification:
         """Classify one message. Raises on API failure; caller decides retry."""
-        response = self._client.messages.parse(
-            model=settings.classifier_model,
-            max_tokens=4096,
-            # The system prompt is long and never changes, so cache it: every
-            # message after the first reads the prefix instead of re-sending it.
-            system=[
-                {
-                    "type": "text",
-                    "text": SYSTEM_PROMPT,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            thinking={"type": "adaptive"},
-            messages=[{"role": "user", "content": _build_prompt(text, context, thread)}],
-            output_format=Classification,
-        )
-
-        # Safety classifiers can decline (HTTP 200, stop_reason "refusal").
-        # A declined message is not a silent drop — it goes to a human.
-        if response.stop_reason == "refusal":
+        try:
+            result = self._backend.classify(
+                SYSTEM_PROMPT,
+                _build_prompt(text, context, thread),
+                Classification,
+            )
+        except Refusal:
+            # A declined message is never a silent drop — it goes to a human.
             log.warning("classifier refused message %s", context.message_ts)
             return Classification(
                 verdict=Verdict.AMBIGUOUS,
@@ -108,7 +94,7 @@ class Classifier:
                 draft=None,
             )
 
-        return _enforce_guardrails(response.parsed_output)
+        return _enforce_guardrails(result)
 
 
 def _build_prompt(
