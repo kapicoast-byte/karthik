@@ -53,7 +53,13 @@ class Plane:
         try:
             with urllib.request.urlopen(request, timeout=30) as response:
                 raw = response.read()
-                return response.status, (json.loads(raw) if raw else None)
+                if not raw:
+                    return response.status, None
+                try:
+                    return response.status, json.loads(raw)
+                except json.JSONDecodeError:
+                    # A 200 of HTML means this host serves the web app, not the API.
+                    return response.status, "<non-JSON body: not an API endpoint>"
         except urllib.error.HTTPError as error:
             raw = error.read()
             try:
