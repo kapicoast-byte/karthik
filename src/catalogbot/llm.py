@@ -49,12 +49,23 @@ class ConfigError(LLMError):
 # key or model id is not.
 TRANSIENT_STATUSES = {429, 500, 502, 503, 504}
 TRANSIENT_PHRASES = ("overloaded", "temporarily", "try again", "rate limit", "busy")
+
+# A per-day quota is also a 429, but waiting eight seconds cannot fix it.
+# Retrying one burns more of the quota and buries the real message.
+EXHAUSTED_PHRASES = ("per-day", "per day", "daily", "quota", "credits to unlock")
 MAX_ATTEMPTS = 4
 
 
 def _is_transient(text: str) -> bool:
     lowered = text.lower()
+    if any(phrase in lowered for phrase in EXHAUSTED_PHRASES):
+        return False
     return any(phrase in lowered for phrase in TRANSIENT_PHRASES)
+
+
+def _is_exhausted(text: str) -> bool:
+    lowered = text.lower()
+    return any(phrase in lowered for phrase in EXHAUSTED_PHRASES)
 
 
 class _Transient(RuntimeError):
@@ -206,7 +217,7 @@ class OpenAICompatBackend(Backend):
             }.get(status, "")
             detail = _error_text(payload)
             message = f"{settings.classifier_model} → {status}{hint}\n{detail}"
-            if status in {401, 402, 403, 404}:
+            if status in {401, 402, 403, 404} or _is_exhausted(detail):
                 raise ConfigError(message)
             if status in TRANSIENT_STATUSES or _is_transient(detail):
                 raise _Transient(message)
@@ -217,6 +228,8 @@ class OpenAICompatBackend(Backend):
         if error := payload.get("error"):
             # OpenRouter reports upstream failures inside a 200 body.
             detail = _error_text(payload)
+            if _is_exhausted(detail):
+                raise ConfigError(detail)
             if _is_transient(detail):
                 raise _Transient(detail)
             raise LLMError(detail)
@@ -226,7 +239,7 @@ class OpenAICompatBackend(Backend):
             raise Refusal("upstream content filter declined this message")
 
         content = choice["message"]["content"] or ""
-        return _strip_code_fence(content)
+        return extract_json(content)
 
     def close(self) -> None:
         self._http.close()
@@ -262,13 +275,42 @@ def available_models(free_only: bool = True) -> list[tuple[str, str]]:
     return sorted(models)
 
 
-def _strip_code_fence(text: str) -> str:
-    """Smaller models wrap JSON in ```json fences despite being told not to."""
+def extract_json(text: str) -> str:
+    """Return the JSON object inside a reply that may be wrapped in prose.
+
+    Models that reason out loud open with "Here's a thinking process..." and
+    put the JSON after it; others fence it in ```json despite instructions.
+    Both are the model answering correctly in an inconvenient wrapper, so
+    recovering the object is our job rather than a failure to report.
+    """
     stripped = text.strip()
     if stripped.startswith("```"):
-        stripped = stripped.split("\n", 1)[-1]
-        stripped = stripped.rsplit("```", 1)[0]
-    return stripped.strip()
+        stripped = stripped.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    # Always scan for the balanced object: a reply can begin with JSON and
+    # still trail commentary after it ("Let me know if you want me to expand").
+    start = stripped.find("{")
+    if start == -1:
+        return stripped
+
+    depth, in_string, escaped = 0, False, False
+    for index in range(start, len(stripped)):
+        char = stripped[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return stripped[start : index + 1]
+    return stripped[start:]
 
 
 def build_backend() -> Backend:
