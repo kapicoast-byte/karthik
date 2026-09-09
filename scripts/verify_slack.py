@@ -254,12 +254,15 @@ def main() -> int:
     # 5. The owner, and the confirmation card -------------------------------
     print()
     if not owner:
+        # Not optional: without it the bot cannot ask its §10 confirmation
+        # questions or send the §9 digest, so it has no way to reach anyone.
+        failures.append("SLACK_OWNER_USER_ID unset")
         print(
-            f"{WARN} SLACK_OWNER_USER_ID not set — the bot has nobody to ask."
+            f"{BAD} SLACK_OWNER_USER_ID not set — the bot has nobody to ask."
             f"\n{INFO}   In Slack: your avatar → Profile → ⋯ → Copy member ID."
         )
         _report(failures)
-        return 1 if failures else 0
+        return 1
 
     profile, _ = call(bot, "users.info", {"user": owner})
     if profile.get("ok"):
